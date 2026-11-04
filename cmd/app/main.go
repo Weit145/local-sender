@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Weit145/local-sender/cmd/internal/connect"
-	"github.com/Weit145/local-sender/cmd/internal/discovery"
+	"github.com/Weit145/local-sender/internal/connect"
+	"github.com/Weit145/local-sender/internal/discovery"
 )
 
 func main() {

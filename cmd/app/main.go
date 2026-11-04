@@ -81,41 +81,51 @@ func runClient(ctx context.Context, broadcastAddr string, timeout time.Duration,
 	if timeout <= 0 {
 		return fmt.Errorf("время поиска должно быть положительным")
 	}
-	searchCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	fmt.Println("Поиск серверов...")
-	servers := discovery.NewDiscovery(broadcastAddr).ListenUPD(searchCtx, timeout)
-	var addresses []string
-	seen := make(map[string]bool)
-	for server := range servers {
-		port, ok := strings.CutPrefix(server.Data, "MY_TCP_PORT:")
-		if !ok {
+	for ctx.Err() == nil {
+		fmt.Println("Поиск серверов...")
+		servers := discovery.NewDiscovery(broadcastAddr).ListenUPD(ctx, timeout)
+		var addresses []string
+		seen := make(map[string]bool)
+		for server := range servers {
+			port, ok := strings.CutPrefix(server.Data, "MY_TCP_PORT:")
+			if !ok {
+				continue
+			}
+			n, err := strconv.Atoi(port)
+			if err != nil || n < 1 || n > 65535 {
+				continue
+			}
+			addr := net.JoinHostPort(server.IP, port)
+			if !seen[addr] {
+				seen[addr] = true
+				addresses = append(addresses, addr)
+				fmt.Printf("%d. %s\n", len(addresses), addr)
+			}
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		if len(addresses) == 0 {
+			fmt.Printf("Серверы не найдены за %s.\n", timeout)
+			fmt.Println("1. Повторить поиск\n0. Выход")
+			choice, err := readChoice(input, 1)
+			if err != nil {
+				return err
+			}
+			if choice == 0 {
+				return nil
+			}
 			continue
 		}
-		n, err := strconv.Atoi(port)
-		if err != nil || n < 1 || n > 65535 {
-			continue
+		fmt.Println("Выберите номер сервера для подключения (0 — выход).")
+		choice, err := readChoice(input, len(addresses))
+		if err != nil {
+			return err
 		}
-		addr := net.JoinHostPort(server.IP, port)
-		if !seen[addr] {
-			seen[addr] = true
-			addresses = append(addresses, addr)
-			fmt.Printf("%d. %s\n", len(addresses), addr)
+		if choice != 0 {
+			connect.NewConnect().ConnectWithInput(ctx, addresses[choice-1], input)
 		}
-	}
-	if ctx.Err() != nil {
 		return nil
-	}
-	if len(addresses) == 0 {
-		return fmt.Errorf("серверы не найдены за %s", timeout)
-	}
-	fmt.Println("Выберите номер сервера для подключения (0 — выход).")
-	choice, err := readChoice(input, len(addresses))
-	if err != nil {
-		return err
-	}
-	if choice != 0 {
-		connect.NewConnect().ConnectWithInput(ctx, addresses[choice-1], input)
 	}
 	return nil
 }

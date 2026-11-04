@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -27,59 +28,123 @@ func (d *Discovery) ListenUPD(ctx context.Context, timeout time.Duration) <-chan
 	return out
 }
 
+type discoveryTarget struct {
+	local  *net.UDPAddr
+	remote *net.UDPAddr
+}
+
+// subnetBroadcast returns the broadcast address for an IPv4 subnet.
+// Point-to-point networks (/31 and /32) have no broadcast address.
+func subnetBroadcast(network *net.IPNet) net.IP {
+	ip := network.IP.To4()
+	ones, bits := network.Mask.Size()
+	if ip == nil || bits != 32 || ones > 30 {
+		return nil
+	}
+	broadcast := make(net.IP, net.IPv4len)
+	for i := range broadcast {
+		broadcast[i] = ip[i] | ^network.Mask[i]
+	}
+	return broadcast
+}
+
+func discoveryTargets(addr *net.UDPAddr) ([]discoveryTarget, error) {
+	// An explicitly supplied address also allows a direct query to a server.
+	if !addr.IP.Equal(net.IPv4bcast) {
+		return []discoveryTarget{{local: &net.UDPAddr{}, remote: addr}}, nil
+	}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	var targets []discoveryTarget
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagBroadcast == 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			fmt.Printf("[UDP Поиск] Интерфейс %s: %v\n", iface.Name, err)
+			continue
+		}
+		for _, address := range addresses {
+			network, ok := address.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			broadcast := subnetBroadcast(network)
+			if broadcast == nil {
+				continue
+			}
+			local := &net.UDPAddr{IP: network.IP.To4()}
+			targets = append(targets, discoveryTarget{local: local, remote: &net.UDPAddr{IP: broadcast, Port: addr.Port}})
+		}
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("нет активных IPv4-интерфейсов для обнаружения")
+	}
+	return targets, nil
+}
+
 func (d *Discovery) readServer(ctx context.Context, out chan<- ServerInfo, timeout time.Duration) {
 	defer close(out)
-
-	broadcastAddr, err := net.ResolveUDPAddr("udp", d.addr)
+	addr, err := net.ResolveUDPAddr("udp4", d.addr)
 	if err != nil {
-		fmt.Println("Ошибка ResolveUDPAddr:", err)
+		fmt.Println("[UDP Поиск] Ошибка адреса:", err)
 		return
 	}
-
-	localAddr, _ := net.ResolveUDPAddr("udp", ":0")
-	conn, err := net.ListenUDP("udp", localAddr)
+	targets, err := discoveryTargets(addr)
 	if err != nil {
-		fmt.Println("Ошибка ListenUDP:", err)
+		fmt.Println("[UDP Поиск] Ошибка интерфейсов:", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var workers sync.WaitGroup
+	for _, target := range targets {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			queryServer(ctx, target, out)
+		}()
+	}
+	workers.Wait()
+}
+
+func queryServer(ctx context.Context, target discoveryTarget, out chan<- ServerInfo) {
+	conn, err := net.ListenUDP("udp4", target.local)
+	if err != nil {
+		fmt.Println("[UDP Поиск] Ошибка открытия сокета:", err)
 		return
 	}
 	defer conn.Close()
-
-	_, err = conn.WriteToUDP([]byte("DISCOVER_SERVERS"), broadcastAddr)
-	if err != nil {
-		fmt.Println("Ошибка отправки пакета:", err)
+	fmt.Printf("[UDP Поиск] %s → %s\n", conn.LocalAddr(), target.remote)
+	buf := make([]byte, 1024)
+	if ctx.Err() != nil {
 		return
 	}
-
-	buf := make([]byte, 1024)
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for {
+	if _, err := conn.WriteToUDP([]byte("DISCOVER_SERVERS"), target.remote); err != nil {
+		fmt.Printf("[UDP Поиск] Ошибка отправки на %s: %v\n", target.remote, err)
+		return
+	}
+	for ctx.Err() == nil {
+		if err := conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+			fmt.Println("[UDP Поиск] Ошибка установки таймаута:", err)
+			return
+		}
+		n, remote, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				continue
+			}
+			fmt.Println("[UDP Поиск] Ошибка чтения:", err)
+			return
+		}
 		select {
+		case out <- ServerInfo{IP: remote.IP.String(), Data: string(buf[:n])}:
 		case <-ctx.Done():
 			return
-		case <-timer.C:
-			return
-		default:
-			readTimeout := 200 * time.Millisecond
-			_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-			n, remoteAddr, err := conn.ReadFromUDP(buf)
-			if err != nil {
-				var netErr net.Error
-				if errors.As(err, &netErr) && netErr.Timeout() {
-					continue
-				}
-				return
-			}
-			select {
-			case out <- ServerInfo{
-				IP:   remoteAddr.IP.String(),
-				Data: string(buf[:n]),
-			}:
-			case <-ctx.Done():
-				return
-			}
 		}
-
 	}
 }

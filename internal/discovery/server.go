@@ -19,13 +19,13 @@ func NewServerListener(udpAddr, tcpPort string) *ServerListener {
 }
 
 func (s *ServerListener) Start(ctx context.Context) {
-	addr, err := net.ResolveUDPAddr("udp4", s.udpAddr)
+	addr, err := net.ResolveUDPAddr("udp", s.udpAddr)
 	if err != nil {
 		fmt.Println("[UDP Сервер] Ошибка адреса:", err)
 		return
 	}
 
-	conn, err := net.ListenUDP("udp4", addr)
+	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		fmt.Println("[UDP Сервер] Ошибка запуска:", err)
 		return

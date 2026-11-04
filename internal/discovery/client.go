@@ -78,6 +78,10 @@ func discoveryTargets(addr *net.UDPAddr) ([]discoveryTarget, error) {
 			}
 			local := &net.UDPAddr{IP: network.IP.To4()}
 			targets = append(targets, discoveryTarget{local: local, remote: &net.UDPAddr{IP: broadcast, Port: addr.Port}})
+			// Also try the limited broadcast address through this interface.
+			if !broadcast.Equal(addr.IP) {
+				targets = append(targets, discoveryTarget{local: local, remote: addr})
+			}
 		}
 	}
 	if len(targets) == 0 {

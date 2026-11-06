@@ -7,25 +7,28 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
-type Client struct {
+type ClientConnect struct {
 }
 
-func NewConnect() *Client {
-	return &Client{}
+func NewClientConnect() *ClientConnect {
+	return &ClientConnect{}
 }
 
-func (c *Client) Connect(ctx context.Context, addr string) {
+func (c *ClientConnect) Connect(ctx context.Context, addr string) {
 	c.ConnectWithInput(ctx, addr, bufio.NewScanner(os.Stdin))
 }
 
-func (c *Client) ConnectWithInput(ctx context.Context, addr string, scanner *bufio.Scanner) {
+func (c *ClientConnect) ConnectWithInput(ctx context.Context, addr string, scanner *bufio.Scanner) {
 	select {
 	case <-ctx.Done():
 		return
 	default:
-		conn, err := net.Dial("tcp", addr)
+		fmt.Printf("Подключение к %s (таймаут 5 секунд)...\n", addr)
+		dialer := net.Dialer{Timeout: 5 * time.Second}
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err != nil {
 			fmt.Println("Не удалось подключиться к серверу:", err)
 			return

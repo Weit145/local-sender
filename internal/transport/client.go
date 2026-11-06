@@ -22,8 +22,28 @@ func RunClient(ctx context.Context, broadcastAddr string, timeout time.Duration,
 	}
 
 	for ctx.Err() == nil {
+		interfaces, err := discovery.ReadInterfaces()
+		if err != nil {
+			return fmt.Errorf("чтение сетевых интерфейсов: %w", err)
+		}
+		if len(interfaces) == 0 {
+			return fmt.Errorf("нет активных IPv4-интерфейсов для поиска")
+		}
+		fmt.Println("Выберите сетевой интерфейс для поиска:")
+		for i, iface := range interfaces {
+			fmt.Printf("%d. %s — %s\n", i+1, iface.Name, iface.Network)
+		}
+		fmt.Println("0. Выход")
+		choice, err := readChoice(input, len(interfaces))
+		if err != nil {
+			return err
+		}
+		if choice == 0 || ctx.Err() != nil {
+			return nil
+		}
+		localIP := interfaces[choice-1].Network.IP.To4()
 		fmt.Println("Поиск серверов...")
-		servers := discovery.NewDiscovery(broadcastAddr).ListenUPD(ctx, timeout)
+		servers := discovery.NewDiscovery(broadcastAddr, localIP).ListenUPD(ctx, timeout)
 		var addresses []string
 		seen := make(map[string]bool)
 		for server := range servers {
@@ -58,7 +78,7 @@ func RunClient(ctx context.Context, broadcastAddr string, timeout time.Duration,
 			continue
 		}
 		fmt.Println("Выберите номер сервера для подключения (0 — выход).")
-		choice, err := readChoice(input, len(addresses))
+		choice, err = readChoice(input, len(addresses))
 		if err != nil {
 			return err
 		}

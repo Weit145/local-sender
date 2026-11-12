@@ -1,10 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Weit145/local-sender/internal/connect"
+	"github.com/Weit145/local-sender/internal/console"
 	"github.com/Weit145/local-sender/internal/transport"
 )
 
@@ -28,9 +30,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	input := bufio.NewScanner(os.Stdin)
+	input := console.NewInput(ctx, os.Stdin)
 	fmt.Println("Выберите режим:\n1. Сервер\n2. Клиент\n0. Выход")
-	mode, err := readChoice(input, 2)
+	mode, err := readChoice(ctx, input, 2)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -38,7 +40,7 @@ func main() {
 
 	switch mode {
 	case 1:
-		err = transport.RunServer(ctx, *tcpAddr, *udpAddr, connect.NewServerConnect())
+		err = transport.RunServer(ctx, *tcpAddr, *udpAddr, connect.NewServerConnect(), input)
 	case 2:
 		err = transport.RunClient(ctx, *broadcastAddr, *timeout, input, con)
 	}
@@ -48,13 +50,17 @@ func main() {
 	}
 }
 
-func readChoice(input *bufio.Scanner, max int) (int, error) {
+func readChoice(ctx context.Context, input *console.Input, max int) (int, error) {
 	for {
 		fmt.Print("> ")
-		if !input.Scan() {
-			return 0, input.Err()
+		text, err := input.Read(ctx)
+		if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+			return 0, nil
 		}
-		choice, err := strconv.Atoi(strings.TrimSpace(input.Text()))
+		if err != nil {
+			return 0, err
+		}
+		choice, err := strconv.Atoi(strings.TrimSpace(text))
 		if err == nil && choice >= 0 && choice <= max {
 			return choice, nil
 		}

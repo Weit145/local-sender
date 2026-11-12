@@ -1,22 +1,24 @@
 package transport
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Weit145/local-sender/internal/console"
 	"github.com/Weit145/local-sender/internal/discovery"
 )
 
 type Connect interface {
-	ConnectWithInput(ctx context.Context, addr string, scanner *bufio.Scanner)
+	ConnectWithInput(ctx context.Context, addr string, input *console.Input)
 }
 
-func RunClient(ctx context.Context, broadcastAddr string, timeout time.Duration, input *bufio.Scanner, connect Connect) error {
+func RunClient(ctx context.Context, broadcastAddr string, timeout time.Duration, input *console.Input, connect Connect) error {
 	if timeout <= 0 {
 		return fmt.Errorf("время поиска должно быть положительным")
 	}
@@ -34,7 +36,7 @@ func RunClient(ctx context.Context, broadcastAddr string, timeout time.Duration,
 			fmt.Printf("%d. %s — %s\n", i+1, iface.Name, iface.Network)
 		}
 		fmt.Println("0. Выход")
-		choice, err := readChoice(input, len(interfaces))
+		choice, err := readChoice(ctx, input, len(interfaces))
 		if err != nil {
 			return err
 		}
@@ -68,7 +70,7 @@ func RunClient(ctx context.Context, broadcastAddr string, timeout time.Duration,
 		if len(addresses) == 0 {
 			fmt.Printf("Серверы не найдены за %s.\n", timeout)
 			fmt.Println("1. Повторить поиск\n0. Выход")
-			choice, err := readChoice(input, 1)
+			choice, err := readChoice(ctx, input, 1)
 			if err != nil {
 				return err
 			}
@@ -78,7 +80,7 @@ func RunClient(ctx context.Context, broadcastAddr string, timeout time.Duration,
 			continue
 		}
 		fmt.Println("Выберите номер сервера для подключения (0 — выход).")
-		choice, err = readChoice(input, len(addresses))
+		choice, err = readChoice(ctx, input, len(addresses))
 		if err != nil {
 			return err
 		}
@@ -90,13 +92,17 @@ func RunClient(ctx context.Context, broadcastAddr string, timeout time.Duration,
 	return nil
 }
 
-func readChoice(input *bufio.Scanner, max int) (int, error) {
+func readChoice(ctx context.Context, input *console.Input, max int) (int, error) {
 	for {
 		fmt.Print("> ")
-		if !input.Scan() {
-			return 0, input.Err()
+		text, err := input.Read(ctx)
+		if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+			return 0, nil
 		}
-		choice, err := strconv.Atoi(strings.TrimSpace(input.Text()))
+		if err != nil {
+			return 0, err
+		}
+		choice, err := strconv.Atoi(strings.TrimSpace(text))
 		if err == nil && choice >= 0 && choice <= max {
 			return choice, nil
 		}

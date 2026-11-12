@@ -5,9 +5,10 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
+
+	"github.com/Weit145/local-sender/internal/console"
 )
 
 type ClientConnect struct {
@@ -17,11 +18,7 @@ func NewClientConnect() *ClientConnect {
 	return &ClientConnect{}
 }
 
-func (c *ClientConnect) Connect(ctx context.Context, addr string) {
-	c.ConnectWithInput(ctx, addr, bufio.NewScanner(os.Stdin))
-}
-
-func (c *ClientConnect) ConnectWithInput(ctx context.Context, addr string, scanner *bufio.Scanner) {
+func (c *ClientConnect) ConnectWithInput(ctx context.Context, addr string, input *console.Input) {
 	select {
 	case <-ctx.Done():
 		return
@@ -47,28 +44,24 @@ func (c *ClientConnect) ConnectWithInput(ctx context.Context, addr string, scann
 			}
 		}()
 
-		fmt.Println("Подключено к серверу. Введите сообщение и нажмите Enter (для выхода введите 'q'):")
 		reader := bufio.NewReader(conn)
-
-		for scanner.Scan() {
-			text := scanner.Text()
-			if strings.ToLower(text) == "q" {
-				return
-			}
-
-			_, err := fmt.Fprintf(conn, "%s\n", text)
-			if err != nil {
-				fmt.Println("Ошибка отправки:", err)
-				return
-			}
-
-			serverReply, err := reader.ReadString('\n')
-			if err != nil {
-				fmt.Println("Ошибка чтения ответа:", err)
-				return
-			}
-			fmt.Print("Ответ сервера: ", serverReply)
+		fmt.Println("Ожидание разрешения от сервера...")
+		approval, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Не удалось получить разрешение сервера:", err)
+			return
 		}
+		switch strings.TrimSpace(approval) {
+		case "ACCEPTED":
+			fmt.Println("Сервер разрешил подключение. Введите сообщение и нажмите Enter (для выхода введите 'q'):")
+		case "REJECTED":
+			fmt.Println("Сервер отклонил подключение.")
+			return
+		default:
+			fmt.Printf("Неизвестный ответ на запрос подключения: %q\n", approval)
+			return
+		}
+		ConnectTCP(ctx, conn, reader, input)
 	}
 
 }

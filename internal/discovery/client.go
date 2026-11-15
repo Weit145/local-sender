@@ -2,80 +2,48 @@ package discovery
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net"
-	"time"
 )
 
-type ServerInfo struct {
-	IP   string
-	Data string
-}
-
-type Discovery struct {
-	addr    string
-	localIP net.IP
-}
-
-func NewDiscovery(addr string, localIP net.IP) *Discovery {
-	return &Discovery{addr: addr, localIP: localIP}
-}
-
-func (d *Discovery) ListenUPD(ctx context.Context, timeout time.Duration) <-chan ServerInfo {
-	out := make(chan ServerInfo, 100)
-	go d.readServer(ctx, out, timeout)
-	return out
-}
-
-func (d *Discovery) readServer(ctx context.Context, out chan<- ServerInfo, timeout time.Duration) {
-	defer close(out)
-	addr, err := net.ResolveUDPAddr("udp4", d.addr)
-	if err != nil {
-		fmt.Println("[UDP Поиск] Ошибка адреса:", err)
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+// FindServers treats its own search deadline as successful completion.
+func (d *Discover) FindServers(parent context.Context, localIP net.IP) error {
+	ctx, cancel := context.WithTimeout(parent, d.timeout)
 	defer cancel()
-	if ctx.Err() != nil {
-		return
+	d.clearServers()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: d.localIP})
+	addr, err := net.ResolveUDPAddr("udp4", d.broadcastAddr)
 	if err != nil {
-		fmt.Println("[UDP Поиск] Ошибка открытия сокета:", err)
-		return
+		return err
+	}
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: localIP})
+	if err != nil {
+		return err
 	}
 	defer conn.Close()
-	fmt.Printf("[UDP Поиск] %s → %s\n", conn.LocalAddr(), addr)
-	buf := make([]byte, 1024)
-	if ctx.Err() != nil {
-		return
-	}
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 	if _, err := conn.WriteToUDP([]byte("DISCOVER_SERVERS"), addr); err != nil {
-		fmt.Printf("[UDP Поиск] Ошибка отправки на %s: %v\n", addr, err)
-		return
+		return err
 	}
-	for ctx.Err() == nil {
-		if err := conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
-			fmt.Println("[UDP Поиск] Ошибка установки таймаута:", err)
-			return
-		}
+	buf := make([]byte, 1024)
+	for {
 		n, remote, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
-				continue
+		if ctx.Err() != nil {
+			if parent.Err() != nil {
+				return parent.Err()
 			}
-			fmt.Println("[UDP Поиск] Ошибка чтения:", err)
-			return
+			return nil
 		}
-		select {
-		case out <- ServerInfo{IP: remote.IP.String(), Data: string(buf[:n])}:
-		case <-ctx.Done():
-			return
+		if err != nil {
+			return err
 		}
+		d.AddServer(remote.IP.String(), string(buf[:n]))
 	}
 }
+
+func (d *Discover) ReadInterfaces() ([]InterfaceAddress, error) { return ReadInterfaces() }
 
 type InterfaceAddress struct {
 	Name    string

@@ -3,65 +3,42 @@ package connect
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"time"
-
-	"github.com/Weit145/local-sender/internal/console"
 )
 
-type ClientConnect struct {
-}
+var ErrRejected = errors.New("connection rejected")
+var ErrDuplicate = errors.New("connection already exists")
 
-func NewClientConnect() *ClientConnect {
-	return &ClientConnect{}
-}
-
-func (c *ClientConnect) ConnectWithInput(ctx context.Context, addr string, input *console.Input) {
-	select {
-	case <-ctx.Done():
-		return
-	default:
-		fmt.Printf("Подключение к %s (таймаут 5 секунд)...\n", addr)
-		dialer := net.Dialer{Timeout: 5 * time.Second}
-		conn, err := dialer.DialContext(ctx, "tcp", addr)
-		if err != nil {
-			fmt.Println("Не удалось подключиться к серверу:", err)
-			return
-		}
-		defer conn.Close()
-
-		ctxDone := make(chan struct{})
-		defer close(ctxDone)
-
-		go func() {
-			select {
-			case <-ctx.Done():
-				conn.Close()
-			case <-ctxDone:
-				return
-			}
-		}()
-
-		reader := bufio.NewReader(conn)
-		fmt.Println("Ожидание разрешения от сервера...")
-		approval, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println("Не удалось получить разрешение сервера:", err)
-			return
-		}
-		switch strings.TrimSpace(approval) {
-		case "ACCEPTED":
-			fmt.Println("Сервер разрешил подключение. Введите сообщение и нажмите Enter (для выхода введите 'q'):")
-		case "REJECTED":
-			fmt.Println("Сервер отклонил подключение.")
-			return
-		default:
-			fmt.Printf("Неизвестный ответ на запрос подключения: %q\n", approval)
-			return
-		}
-		ConnectTCP(ctx, conn, reader, input)
+// ClientConnect runs until the connection ends. Ready reports handshake completion.
+func (c *Connector) ClientConnect(ctx context.Context, addr string, connection *Connection) (err error) {
+	defer func() { connection.finish(err) }()
+	if !c.addConnect(addr, connection) {
+		return ErrDuplicate
 	}
-
+	defer c.removeConnect(addr, connection)
+	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	stop := watchConnection(ctx, conn, connection)
+	defer stop()
+	reader := bufio.NewReader(conn)
+	approval, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	switch strings.TrimSpace(approval) {
+	case "ACCEPTED":
+	case "REJECTED":
+		return ErrRejected
+	default:
+		return fmt.Errorf("unexpected approval: %q", approval)
+	}
+	connection.ready(nil)
+	return c.connectTCP(ctx, conn, reader, connection)
 }
